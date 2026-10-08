@@ -1,0 +1,45 @@
+@import "tailwindcss";
+
+@theme {
+  /* Palette (from design.md) */
+  --color-cream: #FFF8EE;
+  --color-paper: #FFFFFF;
+  --color-tomato: #E8472B;
+  --color-saffron: #F5A623;
+  --color-basil: #3F8F5B;
+  --color-chili: #C62F2F;
+  --color-espresso: #3B2A22;
+  --color-latte: #8A7366;
+
+  /* Fonts */
+  --font-display: "Fredoka", system-ui, sans-serif;
+  --font-sans: "Inter", system-ui, sans-serif;
+}
+
+@layer base {
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--color-cream);
+    color: var(--color-espresso);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Visible keyboard focus (accessibility rule in design.md) */
+  :focus-visible {
+    outline: 2px solid var(--color-tomato);
+    outline-offset: 2px;
+  }
+
+  /* Prices and totals line up in columns */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+}
