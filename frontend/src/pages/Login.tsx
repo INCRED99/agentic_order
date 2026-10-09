@@ -4,13 +4,14 @@ import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
+import GoogleIcon from "../components/ui/GoogleIcon";
 
 interface LocationState {
     from?: { pathname: string };
 }
 
 export function Login() {
-    const { session, loading, signIn } = useAuth();
+    const { session, loading, signIn, signInWithGoogle } = useAuth();
     const navigate = useNavigate();
     const location = useLocation();
     const redirectTo = (location.state as LocationState | null)?.from?.pathname ?? "/orders";
@@ -36,6 +37,11 @@ export function Login() {
             return;
         }
         navigate(redirectTo, { replace: true });
+    }
+    async function handleGoogle() {
+        setError(null);
+        const message = await signInWithGoogle();
+        if (message) setError(message);
     }
 
     const inputClass =
@@ -84,6 +90,22 @@ export function Login() {
                         Sign in
                     </Button>
                 </form>
+                <div className="my-4 flex items-center gap-3 text-sm text-espresso/50">
+                    <span className="h-px flex-1 bg-latte/50" />
+                    or
+                    <span className="h-px flex-1 bg-latte/50" />
+                </div>
+
+                <Button
+                    type="button"
+                    variant="secondary"
+                    className="flex w-full items-center justify-center gap-3"
+                    onClick={handleGoogle}
+                >
+                    <GoogleIcon />
+                    Continue with Google
+                </Button>
+
             </Card>
         </div>
     );

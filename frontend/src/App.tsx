@@ -1,28 +1,34 @@
 import { Navigate, Route, Routes } from "react-router-dom";
+import { ProtectedRoute } from "./auth/ProtectedRoute";
 import AppLayout from "./components/layout/AppLayout";
-import { PlaceholderPage } from "./components/ui/PlaceholderPage";
-import Orders from "./pages/Orders";
-import { Approvals } from "./pages/Approvals";
-import { Menu } from "./pages/Menu"
-import { Payments } from "./pages/Payments"
 import { AgentActivity } from "./pages/AgentActivity";
-import { Emails } from "./pages/Emails"
-import { Settings } from "./pages/Settings"
+import { Approvals } from "./pages/Approvals";
+import { Emails } from "./pages/Emails";
+import { Login } from "./pages/Login";
+import { Menu } from "./pages/Menu";
+import Orders from "./pages/Orders";
+import { Payments } from "./pages/Payments";
+import { Settings } from "./pages/Settings";
+
 export default function App() {
   return (
-
     <Routes>
-      <Route element={<AppLayout />}>
-        <Route index element={<Navigate to="/orders" replace />} />
-        <Route path="/orders" element={<Orders />} />
-        <Route path="/approvals" element={<Approvals />} />
-        <Route path="/menu" element={<Menu />} />
-        <Route path="/payments" element={<Payments />} />
-        <Route path="/agent-activity" element={<AgentActivity />} />
-        <Route path="/emails" element={<Emails />} />
-        <Route path="/settings" element={<Settings />} />
-        <Route path="*" element={<Navigate to="/orders" replace />} />
+      <Route path="/login" element={<Login />} />
+
+      <Route element={<ProtectedRoute />}>
+        <Route element={<AppLayout />}>
+          <Route index element={<Navigate to="/orders" replace />} />
+          <Route path="/orders" element={<Orders />} />
+          <Route path="/approvals" element={<Approvals />} />
+          <Route path="/menu" element={<Menu />} />
+          <Route path="/payments" element={<Payments />} />
+          <Route path="/agent-activity" element={<AgentActivity />} />
+          <Route path="/emails" element={<Emails />} />
+          <Route path="/settings" element={<Settings />} />
+        </Route>
       </Route>
+
+      <Route path="*" element={<Navigate to="/orders" replace />} />
     </Routes>
   );
 }
