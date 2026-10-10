@@ -4,11 +4,10 @@
 
 export type OrderStatus =
     | 'PENDING'
-    | 'AWAITING_APPROVAL'
+    | 'AWAITING_APPROVAL' // computed by the API from a pending approval, not stored in the database
     | 'PAID'
-    | 'PREPARING'
-    | 'COMPLETED'
     | 'CANCELLED'
+    | 'REFUNDED'
 
 export type PaymentStatus =
     | 'UNPAID'
@@ -50,7 +49,7 @@ export interface Order {
 
 export interface Approval {
     id: string
-    orderId: string
+    orderId: string | null
     action: ApprovalAction
     reason: string // agent explanation shown to staff
     status: ApprovalStatus

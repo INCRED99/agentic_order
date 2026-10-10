@@ -88,7 +88,7 @@ export const mockOrders: Order[] = [
             { id: 'oi_9', menuItemId: 'm5', name: 'Masala Chai', quantity: 2, unitPricePaise: 8000 },
         ],
         totalPaise: 48000,
-        status: 'COMPLETED',
+        status: 'PAID',
         paymentStatus: 'PAID',
         paymentLinkUrl: 'https://rzp.io/l/test-kabir',
         createdAt: ago(180),

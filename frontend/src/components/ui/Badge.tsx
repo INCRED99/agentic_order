@@ -44,8 +44,7 @@ const statusTone: Record<Status, Tone> = {
     PENDING: 'warning',
     AWAITING_APPROVAL: 'brand', // needs staff attention
     PAID: 'success',
-    PREPARING: 'warning',
-    COMPLETED: 'neutral',
+
     CANCELLED: 'neutral',
     // payment
     UNPAID: 'neutral',
