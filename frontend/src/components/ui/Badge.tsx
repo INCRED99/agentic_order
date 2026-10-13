@@ -46,6 +46,7 @@ const statusTone: Record<Status, Tone> = {
     PAID: 'success',
 
     CANCELLED: 'neutral',
+    EXPIRED: 'neutral', // NEW: link died unpaid (D30), nothing left to do, same grey as CANCELLED
     // payment
     UNPAID: 'neutral',
     LINK_SENT: 'warning',

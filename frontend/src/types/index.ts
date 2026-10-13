@@ -1,13 +1,13 @@
 // Shared frontend types. Money is always stored in paise (integer).
 // 1 rupee = 100 paise. Format only at display time.
 // Union types, not enums. Import with `import type { ... }`.
-
 export type OrderStatus =
     | 'PENDING'
     | 'AWAITING_APPROVAL' // computed by the API from a pending approval, not stored in the database
     | 'PAID'
     | 'CANCELLED'
     | 'REFUNDED'
+    | 'EXPIRED' // set by the expiry sweep when the payment link dies unpaid (D30)
 
 export type PaymentStatus =
     | 'UNPAID'
@@ -15,6 +15,7 @@ export type PaymentStatus =
     | 'PAID'
     | 'FAILED'
     | 'REFUNDED'
+    | 'EXPIRED' // order expired with an unpaid link
 
 export type ApprovalStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
 
@@ -98,3 +99,5 @@ export interface EmailMessage {
     createdAt: string; // ISO string
     orderId: string | null; // null when email did not become an order
 }
+
+

@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 import { CheckCircle2, CircleAlert } from "lucide-react";
 import Button from "../components/ui/Button";
 import Card from "../components/ui/Card";
+import OrderAddressCard from "../components/OrderAddressCard";
 import { formatMoney } from "../lib/format";
 
 // Mock values. Real ones come from the API later.
@@ -65,6 +66,7 @@ export function Settings() {
         <div>
             <h1 className="font-heading text-2xl text-espresso md:text-3xl">Settings</h1>
             <p className="mt-1 text-espresso/70">Rules the agent follows. Backend enforces them.</p>
+            <OrderAddressCard />
 
             <div className="mt-4 grid gap-4 lg:grid-cols-2">
                 <Card>
