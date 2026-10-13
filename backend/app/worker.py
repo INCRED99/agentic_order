@@ -18,8 +18,9 @@ from app.inbox import (  # mail helpers
     sender_of,  # plain From address
 )
 from app.routing import extract_slug, find_owner, same_inbox  # which restaurant is this mail for
-
+from app.sweep import expire_unpaid_orders  # D42: the expiry sweep
 log = logging.getLogger("worker")  # logger name shown in every line
+SWEEP_INTERVAL_SECONDS = 300  # run the expiry sweep every 5 minutes
 # We log message ids and reasons only, never mail bodies or subjects, because they are customers' private text.
 
 UNKNOWN_REPLY = (  # text of the "unknown address" answer
@@ -163,13 +164,20 @@ def main() -> None:  # entry point: python -m app.worker
         log.error("INBOX_APP_PASSWORD is missing in backend/.env")  # tell the human what to fix
         raise SystemExit(1)  # stop with an error code
     log.info("worker started, inbox=%s, every %ss", settings.shared_inbox, settings.poll_interval_seconds)  # startup banner
+    
+    last_sweep = None  # None means never swept, so the first round sweeps at once
     while True:  # run until you press Ctrl+C
         try:  # a failed poll must not kill the worker
             poll_once()  # check the inbox
         except Exception:  # network down, Gmail error, DB error
             log.exception("poll failed")  # log it and keep going
+        if last_sweep is None or time.monotonic() - last_sweep >= SWEEP_INTERVAL_SECONDS:  # time for the sweep
+            try:  # a failed sweep must not kill the worker
+                expire_unpaid_orders()  # mark unpaid orders with a dead link as EXPIRED
+            except Exception:  # database or network error
+                log.exception("expiry sweep failed")  # log it and keep going
+            last_sweep = time.monotonic()  # remember when we swept
         time.sleep(settings.poll_interval_seconds)  # wait for the next round
-
 
 if __name__ == "__main__":  # true when started with python -m app.worker
     main()  # start the loop

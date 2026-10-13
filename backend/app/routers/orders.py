@@ -31,10 +31,12 @@ def _one(value):  # PostgREST returns an object for many-to-one joins, but be sa
     return value  # object shape or None
 
 
-def _latest_payment(payments: list[dict]) -> dict | None:  # newest payment row of an order
+def _latest_payment(payments) -> dict | None:  # the payment row of an order, accepts an object or a list
     if not payments:  # no payment row yet
         return None  # nothing was created for this order
-    return max(payments, key=lambda p: p["created_at"])  # ISO strings sort correctly, so max is the newest
+    if isinstance(payments, dict):  # since 008 (unique order_id) PostgREST sends ONE object, not a list
+        return payments  # that object is the payment
+    return max(payments, key=lambda p: p["created_at"])  # list shape: ISO strings sort correctly, so max is the newest
 
 
 def _order_status(db_status: str, approvals: list[dict]) -> str:  # compute the UI order status
@@ -42,7 +44,12 @@ def _order_status(db_status: str, approvals: list[dict]) -> str:  # compute the 
         return "AWAITING_APPROVAL"  # computed, never stored, so it cannot disagree with the approvals table
     return db_status  # otherwise the database value is already what the UI expects
 
-
+def _payment_status(order_status: str, payment: dict | None) -> str:  # compute the UI payment status
+    if payment is None:  # no payment row yet
+        return "UNPAID"  # nothing was created for this order
+    if payment["status"] == "CREATED" and order_status == "EXPIRED":  # D42: the sweep changes only orders.status, so the payment row stays CREATED
+        return "EXPIRED"  # without this line an expired order would show "Link sent"
+    return PAYMENT_STATUS_MAP.get(payment["status"], "UNPAID")  # normal mapping
 def _to_order(row: dict) -> dict:  # turn one joined database row into the OrderOut shape
     customer = _one(row.get("customers")) or {}  # customer data, empty dict if the join is missing
     payment = _latest_payment(row.get("payments") or [])  # newest payment or None
@@ -63,7 +70,7 @@ def _to_order(row: dict) -> dict:  # turn one joined database row into the Order
         "items": items,  # lines built above
         "total_paise": row["total_paise"],  # total stored in the database
         "status": _order_status(row["status"], row.get("approvals") or []),  # PENDING, AWAITING_APPROVAL, PAID, CANCELLED or REFUNDED
-        "payment_status": PAYMENT_STATUS_MAP.get(payment["status"], "UNPAID") if payment else "UNPAID",  # computed, never stored
+        "payment_status": _payment_status(row["status"], payment),  # computed, never stored
         "payment_link_url": payment.get("payment_link_url") if payment else None,  # None until a link is created
         "created_at": row["created_at"],  # ISO timestamp string
         "updated_at": row["updated_at"],  # ISO timestamp string

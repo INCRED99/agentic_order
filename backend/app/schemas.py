@@ -61,3 +61,13 @@ class OrderOut(BaseModel):  # one order, as sent to the UI
     payment_link_url: str | None = None  # None until decision D4 is made
     created_at: str  # ISO timestamp
     updated_at: str  # ISO timestamp
+
+class ApprovalOut(BaseModel):  # one approval, as sent to the UI
+    # pyrefly: ignore [parse-error]
+    id: str  # approval id
+    order_id: str | None = None  # None when the approval is not about an order
+    action: str  # for example accept_large_order, cancel_order
+    reason: str  # why the agent asked, empty text when unknown
+    status: str  # PENDING, APPROVED or REJECTED, mapped to uppercase by the API
+    created_at: str  # ISO timestamp
+    decided_at: str | None = None  # None while pending
