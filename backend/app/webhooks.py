@@ -7,6 +7,7 @@ from starlette.concurrency import run_in_threadpool  # run our sync database cod
 from app.db import db  # shared Supabase client (service role, bypasses RLS)
 from app.inbox import send_mail  # SMTP sender, signature: send_mail(to, subject, body, in_reply_to=None)  (CHECK the import path)
 from app.razorpay_client import verify_webhook_signature  # HMAC check, signature: (raw_body, signature_header)
+from app.redis_client import menu_cache_delete  # drop the cached dish list when stock changes
 
 log = logging.getLogger(__name__)  # logger named after this file
 
@@ -135,7 +136,7 @@ def _process(raw: bytes, signature: str):  # all sync work, returns (http_status
         _create_refund_approval(order, payment_id, amount, f"Amount {amount} differs from total {order['total_paise']}")  # owner decides
         return "refund_approval", None  # 200
     try:  # step 5: one Postgres function does the whole PAID transition
-               res = db.rpc(  # call the function
+        res = db.rpc(  # call the function
             "mark_order_paid",  # created by 006
             {  # parameter names must match 006 exactly
                 "p_owner_id": order["owner_id"],  # owner from the DB row
@@ -157,6 +158,7 @@ def _process(raw: bytes, signature: str):  # all sync work, returns (http_status
     outcome = str(res.data)  # result word, shape not verified (CHECK: could be dict)
     if "already_paid" in outcome:  # another request won the race
         return "already_paid", None  # 200, no mail
+    menu_cache_delete(order["owner_id"])  # stock changed, drop the cached dish list
     kind = "paid_out_of_stock" if "paid_out_of_stock" in outcome else "paid"  # pick mail text
     return kind, (order["owner_id"], order["customer_id"], order["id"], kind)  # mail job for after the response
 

@@ -19,6 +19,7 @@ from app.inbox import (  # mail helpers
 )
 from app.routing import extract_slug, find_owner, same_inbox  # which restaurant is this mail for
 from app.sweep import expire_unpaid_orders  # D42: the expiry sweep
+from app.agent_runner import process_received_mails  # agent hook: run the agent on received mails
 log = logging.getLogger("worker")  # logger name shown in every line
 SWEEP_INTERVAL_SECONDS = 300  # run the expiry sweep every 5 minutes
 # We log message ids and reasons only, never mail bodies or subjects, because they are customers' private text.
@@ -129,6 +130,9 @@ def handle_message(mid: str, msg) -> None:  # decide where one new mail goes
     if owner_id is None:  # slug well formed but nobody owns it
         record_unrouted(mid, msg, sender, "unknown_slug")  # answer "unknown address"
         return  # done
+    if is_automated(msg, sender):  # D65 = a: robot mail never reaches the agent
+        record_unrouted(mid, msg, sender, "automated")  # remembered for dedup, reply is off for robots
+        return  # done
     store_routed(owner_id, mid, msg, to_addr, sender)  # normal case
 
 
@@ -159,7 +163,7 @@ def poll_once() -> None:  # one full check of the inbox
 
 
 def main() -> None:  # entry point: python -m app.worker
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")  # readable log lines
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")  # readable log lines     logging.getLogger("httpx").setLevel(logging.WARNING)  # hide one line per HTTP request, keep our own lines readable
     if not settings.inbox_app_password:  # worker cannot work without it
         log.error("INBOX_APP_PASSWORD is missing in backend/.env")  # tell the human what to fix
         raise SystemExit(1)  # stop with an error code
@@ -171,6 +175,10 @@ def main() -> None:  # entry point: python -m app.worker
             poll_once()  # check the inbox
         except Exception:  # network down, Gmail error, DB error
             log.exception("poll failed")  # log it and keep going
+        try:  # a failed agent step must not kill the worker
+            process_received_mails()  # run the agent on mails with status received
+        except Exception:  # database error or anything unexpected
+            log.exception("agent step failed")  # log it and keep going
         if last_sweep is None or time.monotonic() - last_sweep >= SWEEP_INTERVAL_SECONDS:  # time for the sweep
             try:  # a failed sweep must not kill the worker
                 expire_unpaid_orders()  # mark unpaid orders with a dead link as EXPIRED
@@ -178,6 +186,5 @@ def main() -> None:  # entry point: python -m app.worker
                 log.exception("expiry sweep failed")  # log it and keep going
             last_sweep = time.monotonic()  # remember when we swept
         time.sleep(settings.poll_interval_seconds)  # wait for the next round
-
 if __name__ == "__main__":  # true when started with python -m app.worker
     main()  # start the loop

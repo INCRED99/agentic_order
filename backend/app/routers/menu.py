@@ -1,7 +1,7 @@
 import logging  # Python's built-in logger, used to record rare failures
 from fastapi import APIRouter, Depends, HTTPException  # APIRouter groups routes, Depends injects deps.py, HTTPException returns errors
 from postgrest.exceptions import APIError  # error raised when Postgres rejects a query, has a .code
-
+from app.redis_client import menu_cache_delete, menu_cache_get, menu_cache_set  # A31b: drop the cached dish list after every change
 from app.db import db  # the shared Supabase client (service role, bypasses RLS)
 from app.deps import current_user_id  # verifies the token and returns the owner_id
 from app.schemas import MenuItemCreate, MenuItemOut, MenuItemUpdate  # request and response shapes
@@ -45,17 +45,21 @@ def _get_item(owner_id: str, item_id: str) -> dict | None:  # one dish with its 
     return _flatten(res.data[0]) if res.data else None  # None when there is no match
 
 
-@router.get("", response_model=list[MenuItemOut])  # GET /menu, output filtered to MenuItemOut fields
-def list_menu(owner_id: str = Depends(current_user_id)):  # owner_id comes from the verified token only
-    res = (  # build the query step by step
-        db.table("menu_items")  # read from the menu_items table
-        .select(COLS)  # dish fields plus stock
-        .eq("owner_id", owner_id)  # THE guard: without this line every restaurant's menu would leak
-        .order("created_at")  # stable order, oldest first, so the UI does not shuffle
-        .execute()  # send the query to Supabase
+@router.get("", response_model=list[MenuItemOut])
+def list_menu(owner_id: str = Depends(current_user_id)):
+    cached = menu_cache_get(owner_id)
+    if cached is not None:
+        return cached
+    res = (
+        db.table("menu_items")
+        .select(COLS)
+        .eq("owner_id", owner_id)
+        .order("created_at")
+        .execute()
     )
-    return [_flatten(r) for r in res.data]  # flatten each row, FastAPI turns the list into JSON
-
+    items = [_flatten(r) for r in res.data]
+    menu_cache_set(owner_id, items)
+    return items
 
 # DECISION PROBLEM: one new dish needs rows in TWO tables (menu_items and inventory).
 # Problem: two separate calls can half-succeed, leaving a dish with no stock row.
@@ -83,7 +87,8 @@ def create_item(body: MenuItemCreate, owner_id: str = Depends(current_user_id)):
             db.table("menu_items").delete().eq("id", item["id"]).eq("owner_id", owner_id).execute()  # remove the dish we just made
         except Exception:  # cleanup failed too
             log.exception("Orphan menu item %s: inventory insert and cleanup both failed", item["id"])  # record it so you can fix by hand
-        raise HTTPException(500, "Could not create item, please try again")  # tell the client it failed
+        raise HTTPException(500, "Could not create item, please try again")  # tell the client it failed   
+    menu_cache_delete(owner_id)  # a new dish changes what the agent must see
     return {**item, "stock": DEFAULT_STOCK}  # the insert result has no join, so add the stock we just wrote
 
 
@@ -108,6 +113,7 @@ def update_item(item_id: str, body: MenuItemUpdate, owner_id: str = Depends(curr
         _raise_db_error(e)  # converts to a clear HTTP error
     if not res.data:  # no row matched
         raise HTTPException(404, "Item not found")  # same answer for "no such id" and "not yours", so ids cannot be probed
+    menu_cache_delete(owner_id)  # price, name or availability changed    
     fresh = _get_item(owner_id, item_id)  # read again so the answer includes stock, one extra query
     if fresh is None:  # deleted between the two calls
         raise HTTPException(404, "Item not found")  # treat like any missing item
@@ -132,3 +138,4 @@ def delete_item(item_id: str, owner_id: str = Depends(current_user_id)):  # item
         _raise_db_error(e)  # converts to a 409 message
     if not res.data:  # delete returns deleted rows, empty means nothing was deleted
         raise HTTPException(404, "Item not found")  # no such id or not yours
+    menu_cache_delete(owner_id)  # the dish is gone

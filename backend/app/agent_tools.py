@@ -40,6 +40,7 @@ class RunContext:  # everything the tools need to know about ONE mail, filled by
     menu_map: dict[int, str] = field(default_factory=dict)  # dish number shown to the LLM -> real menu_item uuid
     order_id: str | None = None  # the order this run created, None until create_order works
     ended_reason: str | None = None  # why the run should end: "link_sent", "asked", "approval" or None
+    already_handled: bool = False  # True when create_order found an order from an earlier run of this same mail (D47), customer mails are then blocked in code
     steps: list[dict] = field(default_factory=list)  # log of {tool, summary, ok}, never holds mail text (D51)
 
 
@@ -247,11 +248,9 @@ def build_tools(run: RunContext) -> list:  # returns the five tools, each one bo
         run.order_id = str(order_id)  # remember the order for send_payment_link and request_approval
         total = _rupees(result.get("total_paise", 0))  # total from the DB, never from the LLM (D29)
         if result.get("already_existed"):  # same mail ran before (D47)
+            run.already_handled = True  # hard flag, ask_customer checks it, the LLM cannot override it
             _step(run, "create_order", "order already existed", True)  # record it
             return f"An order already exists for this mail, total Rs {total}. Nothing was changed. Call send_payment_link."  # plain text for the LLM
-        _step(run, "create_order", f"order created, {len(payload)} lines", True)  # record the success
-        return f"Order created, total Rs {total}. Next call send_payment_link."  # plain text for the LLM
-
     # DECISION PROBLEM: what should send_payment_link do when sending fails with an unexpected error (Razorpay down, SMTP down)?
     # Options: (1) catch it and return text, (2) let the exception go up so ToolRetryMiddleware can retry (D28), and a final failure marks the run failed.
     # Chosen: option 2 for unexpected errors. Reason: a payment link is the sale itself, a retry and then a failed run (reclaimed later, D59) is better than the LLM giving up politely.
@@ -283,6 +282,9 @@ def build_tools(run: RunContext) -> list:  # returns the five tools, each one bo
     def ask_customer(question: str) -> str:
         """Ask the customer ONE short question by email when the order is unclear (unknown dish, missing quantity). Plain text, no links. After this tool, stop."""
         text = (question or "").strip()  # clean the text
+        if run.already_handled:  # this mail already has an order from an earlier run
+            _step(run, "ask_customer", "blocked: mail already handled", True)  # record it, no mail text
+            return "This mail was already handled. Stop now and call no other tool."  # plain text for the LLM, no customer mail is sent
         if not text:  # nothing to send
             return "The question is empty."  # plain text for the LLM
         if len(text) > MAX_QUESTION_CHARS:  # too long
