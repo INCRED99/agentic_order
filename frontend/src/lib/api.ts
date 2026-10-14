@@ -1,7 +1,9 @@
 import { supabase } from "./supabase"; // the shared Supabase client, used here only to read the login token (adjust the path if your file is elsewhere)
 
-// Base URL of the FastAPI backend. Set VITE_API_URL in .env.local for deploys, local dev falls back to port 8000.
-const API_URL: string = import.meta.env.VITE_API_URL ?? "http://localhost:8000"; // ?? means "use the right side when the left is empty"
+// Base URL of the FastAPI backend. Set VITE_API_URL in .env.local or Vercel environment variables.
+const rawApiUrl = import.meta.env.VITE_API_URL;
+const API_URL: string = rawApiUrl && rawApiUrl.trim() !== "" ? rawApiUrl.trim().replace(/\/+$/, "") : "http://localhost:8000";
+
 
 // Error that carries the HTTP status, so screens can react differently to 401, 404, 409.
 export class ApiError extends Error { // extends the built-in Error so it works with try/catch
