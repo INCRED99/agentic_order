@@ -2,3 +2,8 @@ fastapi
 uvicorn[standard]
 supabase
 pydantic-settings
+redis
+python-dotenv
+requests
+boto3
+razorpay
