@@ -69,12 +69,12 @@ export interface MenuItem {
 }
 
 
-export type AgentRunStatus = "SUCCESS" | "WAITING_APPROVAL" | "FAILED";
-
+export type AgentRunStatus = "RUNNING" | "SUCCESS" | "WAITING_APPROVAL" | "FAILED"; // A12: RUNNING added, the database already uses these exact words
 export interface AgentStep {
     tool: string;
     summary: string;
     ok: boolean;
+
 }
 
 export interface AgentRun {
@@ -86,10 +86,11 @@ export interface AgentRun {
     modelCalls: number;
     tokens: number;
     steps: AgentStep[];
+    error?: string | null; // A17: exception type name for failed runs, optional so the old mock data still fits
 }
 
 export type EmailDirection = "INBOUND" | "OUTBOUND";
-
+export type EmailStatus = "received" | "processing" | "processed" | "failed"; // A23: progress of the agent step, same words as the database
 export interface EmailMessage {
     id: string;
     direction: EmailDirection;
@@ -98,6 +99,7 @@ export interface EmailMessage {
     preview: string;
     createdAt: string; // ISO string
     orderId: string | null; // null when email did not become an order
+    status?: EmailStatus; // optional so the old mock data still fits
 }
 
 

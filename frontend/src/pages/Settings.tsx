@@ -1,163 +1,70 @@
-import { useState } from "react";
-import type { FormEvent } from "react";
-import { CheckCircle2, CircleAlert } from "lucide-react";
-import Button from "../components/ui/Button";
-import Card from "../components/ui/Card";
-import OrderAddressCard from "../components/OrderAddressCard";
-import { formatMoney } from "../lib/format";
+import { useEffect, useState } from "react"; // load /me once
+import Card from "../components/ui/Card"; // shared panel box
+import OrderAddressCard from "../components/OrderAddressCard"; // already real, shows the order address
+import { ApiError, apiFetch } from "../lib/api"; // the shared backend caller
 
-// Mock values. Real ones come from the API later.
-const gmail = { connected: true, address: "orders@restaurant.example" };
-const razorpay = { mode: "Test" };
-
-interface PolicySettings {
-    restaurantName: string;
-    largeOrderPaise: number;
-    maxDiscountPercent: number;
+interface Me { // the part of GET /me this page uses
+    restaurant_name: string; // from profiles
+    login_email: string; // the owner's login address
 }
 
-const initial: PolicySettings = {
-    restaurantName: "Order Desk Kitchen",
-    largeOrderPaise: 500000,
-    maxDiscountPercent: 10,
-};
+// DECISION PROBLEM: the agent rules shown here are written twice, in the agent code and in this text.
+// Options: (1) hardcode the text here, (2) let GET /me send the rules.
+// Chosen: option 1 (D66). Reason: V1 rules are fixed constants, no editing yet.
+// Cost: if D64 or D55 change, this text must be edited too. V2: store rules per restaurant and send them.
+const RULES: string[] = [ // fixed V1 rules, same as the agent code
+    "An order with more than 10 portions of one dish, or more than 25 portions in total, needs staff approval.", // D64
+    "Discounts, cancellations and refunds always need staff approval.", // D62 and D49
+    "Unclear orders (missing quantity, unknown or sold-out dish) get a question by mail, no order is made.", // D50, D63
+    "Each restaurant has a limit on agent runs per minute and per day.", // D55, no number shown because it changes
+];
 
-export function Settings() {
-    const [saved, setSaved] = useState<PolicySettings>(initial);
-    const [name, setName] = useState(initial.restaurantName);
-    const [largeRupees, setLargeRupees] = useState(String(initial.largeOrderPaise / 100));
-    const [discount, setDiscount] = useState(String(initial.maxDiscountPercent));
-    const [error, setError] = useState<string | null>(null);
-    const [saving, setSaving] = useState(false);
-    const [justSaved, setJustSaved] = useState(false);
+export function Settings() { // the Settings page
+    const [me, setMe] = useState<Me | null>(null); // loaded profile
+    const [error, setError] = useState<string | null>(null); // readable error text
 
-    function handleSubmit(e: FormEvent) {
-        e.preventDefault();
-        setJustSaved(false);
+    useEffect(() => { // load once when the page opens
+        apiFetch<Me>("/me") // backend call with the login token
+            .then(setMe) // store the profile
+            .catch((e) => setError(e instanceof ApiError ? e.message : "Could not load settings")); // friendly text
+    }, []); // empty list: run once
 
-        const rupees = Number(largeRupees);
-        const percent = Number(discount);
-
-        if (!name.trim()) return setError("Restaurant name is required.");
-        if (!Number.isInteger(rupees) || rupees < 1)
-            return setError("Large order limit must be a whole number of rupees, at least 1.");
-        if (!Number.isInteger(percent) || percent < 0 || percent > 100)
-            return setError("Max discount must be a whole number from 0 to 100.");
-
-        setError(null);
-        setSaving(true);
-        // Fake network call. Replace with real API call later.
-        setTimeout(() => {
-            setSaved({
-                restaurantName: name.trim(),
-                largeOrderPaise: rupees * 100,
-                maxDiscountPercent: percent,
-            });
-            setSaving(false);
-            setJustSaved(true);
-        }, 700);
-    }
-
-    const inputClass =
-        "mt-1 w-full rounded-xl border border-latte bg-paper px-3 py-2.5 text-espresso " +
-        "placeholder:text-espresso/40 focus:border-tomato focus:outline-none focus:ring-2 focus:ring-tomato/30";
-
-    return (
+    return ( // page markup
         <div>
             <h1 className="font-heading text-2xl text-espresso md:text-3xl">Settings</h1>
-            <p className="mt-1 text-espresso/70">Rules the agent follows. Backend enforces them.</p>
+            <p className="mt-1 text-espresso/70">Your restaurant and the rules the agent follows.</p>
             <OrderAddressCard />
+
+            {error && ( // plain text error, React escapes it
+                <p className="mt-3 rounded-lg bg-chili/15 px-3 py-2 text-sm text-chili">{error}</p>
+            )}
 
             <div className="mt-4 grid gap-4 lg:grid-cols-2">
                 <Card>
-                    <h2 className="font-heading text-lg text-espresso">Agent rules</h2>
-                    <form onSubmit={handleSubmit} className="mt-4 flex flex-col gap-4">
-                        <label className="block text-sm font-medium text-espresso">
-                            Restaurant name
-                            <input
-                                type="text"
-                                required
-                                value={name}
-                                onChange={(e) => setName(e.target.value)}
-                                className={inputClass}
-                            />
-                        </label>
-
-                        <label className="block text-sm font-medium text-espresso">
-                            Large order needs approval above (Rs)
-                            <input
-                                type="number"
-                                inputMode="numeric"
-                                min={1}
-                                step={1}
-                                required
-                                value={largeRupees}
-                                onChange={(e) => setLargeRupees(e.target.value)}
-                                className={inputClass}
-                            />
-                            <span className="mt-1 block text-xs font-normal text-espresso/60">
-                                Now: {formatMoney(saved.largeOrderPaise)}
-                            </span>
-                        </label>
-
-                        <label className="block text-sm font-medium text-espresso">
-                            Max discount agent may request (%)
-                            <input
-                                type="number"
-                                inputMode="numeric"
-                                min={0}
-                                max={100}
-                                step={1}
-                                required
-                                value={discount}
-                                onChange={(e) => setDiscount(e.target.value)}
-                                className={inputClass}
-                            />
-                            <span className="mt-1 block text-xs font-normal text-espresso/60">
-                                Now: {saved.maxDiscountPercent}%. Every discount still needs staff approval.
-                            </span>
-                        </label>
-
-                        {error && (
-                            <p role="alert" className="text-sm text-chili">
-                                {error}
-                            </p>
-                        )}
-                        {justSaved && (
-                            <p role="status" className="text-sm text-basil">
-                                Saved.
-                            </p>
-                        )}
-
-                        <Button type="submit" loading={saving} disabled={saving}>
-                            Save
-                        </Button>
-                    </form>
+                    <h2 className="font-heading text-lg text-espresso">Restaurant</h2>
+                    <dl className="mt-4 flex flex-col gap-3 text-sm">
+                        <div>
+                            <dt className="text-espresso/60">Name</dt>
+                            <dd className="font-medium text-espresso">{me ? me.restaurant_name : "Loading..."}</dd>
+                        </div>
+                        <div>
+                            <dt className="text-espresso/60">Login email</dt>
+                            <dd className="truncate font-medium text-espresso">{me ? me.login_email : "Loading..."}</dd>
+                        </div>
+                        <div>
+                            <dt className="text-espresso/60">Payments</dt>
+                            <dd className="font-medium text-espresso">Razorpay test mode. No real money moves.</dd>
+                        </div>
+                    </dl>
                 </Card>
 
                 <Card>
-                    <h2 className="font-heading text-lg text-espresso">Connections</h2>
-                    <ul className="mt-4 flex flex-col gap-4">
-                        <li className="flex items-start gap-3">
-                            {gmail.connected ? (
-                                <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-basil" aria-label="connected" />
-                            ) : (
-                                <CircleAlert className="mt-0.5 h-5 w-5 shrink-0 text-chili" aria-label="not connected" />
-                            )}
-                            <div className="min-w-0">
-                                <p className="font-medium text-espresso">Gmail</p>
-                                <p className="truncate text-sm text-espresso/70">
-                                    {gmail.connected ? gmail.address : "Not connected"}
-                                </p>
-                            </div>
-                        </li>
-                        <li className="flex items-start gap-3">
-                            <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-basil" aria-label="active" />
-                            <div>
-                                <p className="font-medium text-espresso">Razorpay</p>
-                                <p className="text-sm text-espresso/70">{razorpay.mode} mode. No real money moves.</p>
-                            </div>
-                        </li>
+                    <h2 className="font-heading text-lg text-espresso">Agent rules</h2>
+                    <p className="mt-1 text-sm text-espresso/60">Fixed for now. Editing comes later.</p>
+                    <ul className="mt-3 flex list-disc flex-col gap-2 pl-5 text-sm text-espresso">
+                        {RULES.map((rule) => ( // one bullet per rule
+                            <li key={rule}>{rule}</li>
+                        ))}
                     </ul>
                 </Card>
             </div>

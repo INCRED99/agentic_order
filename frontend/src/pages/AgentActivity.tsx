@@ -1,42 +1,56 @@
-import { Check, X } from "lucide-react";
-import Card from "../components/ui/Card";
-import { mockAgentRuns } from "../data/mock";
-import { formatTimeAgo } from "../lib/format";
-import type { AgentRunStatus } from "../types";
+import { Check, X } from "lucide-react"; // tick and cross icons for steps
+import Card from "../components/ui/Card"; // shared panel box
+import { useAgentRuns } from "../hooks/useAgentRuns"; // real runs from GET /agent-runs
+import { formatTimeAgo } from "../lib/format"; // "5 min ago" formatting
+import type { AgentRunStatus } from "../types"; // status words
 
-const STATUS_LABEL: Record<AgentRunStatus, string> = {
-    SUCCESS: "Done",
-    WAITING_APPROVAL: "Waiting for staff",
-    FAILED: "Failed",
+const STATUS_LABEL: Record<AgentRunStatus, string> = { // text on the status pill
+    RUNNING: "Running", // A12: run in progress
+    SUCCESS: "Done", // finished fine
+    WAITING_APPROVAL: "Waiting for staff", // owner must decide
+    FAILED: "Failed", // run crashed
 };
 
-const STATUS_STYLE: Record<AgentRunStatus, string> = {
-    SUCCESS: "bg-basil/20 text-basil",
-    WAITING_APPROVAL: "bg-saffron/25 text-espresso",
-    FAILED: "bg-chili/15 text-chili",
+const STATUS_STYLE: Record<AgentRunStatus, string> = { // colors of the pill
+    RUNNING: "bg-espresso/10 text-espresso", // neutral for in progress
+    SUCCESS: "bg-basil/20 text-basil", // green
+    WAITING_APPROVAL: "bg-saffron/25 text-espresso", // yellow
+    FAILED: "bg-chili/15 text-chili", // red
 };
 
-export function AgentActivity() {
-    const runs = [...mockAgentRuns].sort(
-        (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
-    );
-    const totalTokens = runs.reduce((sum, r) => sum + r.tokens, 0);
+export function AgentActivity() { // the Agent Activity page
+    const { runs, loading, error } = useAgentRuns(); // data, first-load flag and error text
+    const totalTokens = runs.reduce((sum, r) => sum + r.tokens, 0); // tokens of the runs on screen
 
-    return (
+    return ( // page markup
         <div>
             <h1 className="font-heading text-2xl text-espresso md:text-3xl">Agent Activity</h1>
-            <p className="mt-1 text-espresso/70">
-                {runs.length} runs, {totalTokens.toLocaleString("en-IN")} tokens used.
-            </p>
+            {loading ? ( // first load still running
+                <p className="mt-1 text-espresso/70">Loading runs...</p>
+            ) : (
+                <p className="mt-1 text-espresso/70">
+                    {runs.length} runs, {totalTokens.toLocaleString("en-IN")} tokens used.
+                </p>
+            )}
+
+            {error && ( // plain text error, React escapes it
+                <p className="mt-3 rounded-lg bg-chili/15 px-3 py-2 text-sm text-chili">{error}</p>
+            )}
+
+            {!loading && !error && runs.length === 0 && ( // nothing yet
+                <p className="mt-4 text-espresso/60">
+                    No agent runs yet. Runs appear when the worker processes a customer mail.
+                </p>
+            )}
 
             <ul className="mt-4 grid gap-3">
-                {runs.map((run) => (
+                {runs.map((run) => ( // one card per run
                     <li key={run.id}>
                         <Card>
                             <details>
                                 <summary className="flex cursor-pointer list-none flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                                     <div className="min-w-0">
-                                        <p className="truncate font-medium text-espresso">{run.emailSubject}</p>
+                                        <p className="truncate font-medium text-espresso">{run.emailSubject || "(no subject)"}</p>
                                         <p className="truncate text-sm text-espresso/60">
                                             {run.emailFrom} · {formatTimeAgo(run.startedAt)}
                                         </p>
@@ -51,8 +65,11 @@ export function AgentActivity() {
                                 <p className="mt-3 text-sm text-espresso/60">
                                     {run.modelCalls} model calls · {run.tokens.toLocaleString("en-IN")} tokens
                                 </p>
+                                {run.error && ( // A17: only failed runs have it
+                                    <p className="mt-1 text-sm text-chili">Error: {run.error}</p>
+                                )}
                                 <ol className="mt-2 flex flex-col gap-2">
-                                    {run.steps.map((step, i) => (
+                                    {run.steps.map((step, i) => ( // tool calls in order
                                         <li key={i} className="flex items-start gap-2 text-sm">
                                             {step.ok ? (
                                                 <Check className="mt-0.5 h-4 w-4 shrink-0 text-basil" aria-label="ok" />
