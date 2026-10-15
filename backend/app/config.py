@@ -8,7 +8,7 @@ class Settings(BaseSettings):  # one class that holds every setting the app need
     supabase_service_role_key: str  # required: backend-only key, bypasses RLS
     shared_inbox: str = "mealdesk.orders@gmail.com"  # the one Gmail inbox all restaurants share
     frontend_origins: str = "http://localhost:5173,https://agentic-order.vercel.app"  # comma separated list of allowed browser origins
-
+    brevo_api_key: str = ""
     inbox_app_password: str = ""  # Gmail app password; empty default so the API starts without it, the worker checks it
     imap_host: str = "imap.gmail.com"  # server used to read mail
     smtp_host: str = "smtp.gmail.com"  # server used to send mail

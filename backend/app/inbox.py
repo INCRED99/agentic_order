@@ -1,3 +1,4 @@
+import httpx
 import email  # parse raw mail bytes into message objects
 import imaplib  # read mail over IMAP
 import re  # small regex cleanups
@@ -86,16 +87,19 @@ def is_automated(msg: EmailMessage, sender: str) -> bool:  # true for robots, ne
     return local in AUTO_LOCALS or local.startswith("noreply")  # typical robot sender names
 
 
-def send_mail(to: str, subject: str, body: str, in_reply_to: str | None = None) -> None:  # send one mail from the shared inbox
-    msg = EmailMessage()  # empty outgoing mail
-    msg["From"] = settings.shared_inbox  # Gmail only allows our own address here
-    msg["To"] = to  # recipient
-    msg["Subject"] = subject  # subject line
-    if in_reply_to:  # keep the reply inside the customer's thread
-        msg["In-Reply-To"] = in_reply_to  # points at the mail we answer
-        msg["References"] = in_reply_to  # same, for mail clients that group by References
-    msg["Auto-Submitted"] = "auto-replied"  # tells other robots not to answer us, stops loops
-    msg.set_content(body)  # plain text body
-    with smtplib.SMTP_SSL(settings.smtp_host, settings.smtp_port, timeout=30) as smtp:  # encrypted SMTP connection
-        smtp.login(settings.shared_inbox, settings.inbox_app_password.replace(" ", ""))  # same app password as IMAP
-        smtp.send_message(msg)  # hand the mail to Gmail
+def send_mail(to: str, subject: str, body: str, in_reply_to: str | None = None):
+    payload = {
+        "sender": {"name": "Order Desk", "email": settings.shared_inbox},
+        "to": [{"email": to}],
+        "subject": subject,
+        "textContent": body,
+    }
+    if in_reply_to:
+        payload["headers"] = {"In-Reply-To": in_reply_to, "References": in_reply_to}
+    r = httpx.post(
+        "https://api.brevo.com/v3/smtp/email",
+        headers={"api-key": settings.brevo_api_key, "content-type": "application/json"},
+        json=payload,
+        timeout=30,
+    )
+    r.raise_for_status()
