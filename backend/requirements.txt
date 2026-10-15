@@ -7,3 +7,7 @@ python-dotenv
 requests
 boto3
 razorpay
+langchain
+langchain-core
+langgraph
+langchain-openai
