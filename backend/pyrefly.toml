@@ -1,0 +1,4 @@
+# tell Pyrefly which Python to read packages from
+python-interpreter-path = "C:\\venvs\\restaurant\\Scripts\\python.exe"
+# search app imports from backend folder
+search-path = ["."]
