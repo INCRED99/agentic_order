@@ -1,3 +1,6 @@
+import os
+import threading
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -5,8 +8,15 @@ from app.config import settings
 from app.routers import me, menu,orders,approvals,agent_runs,emails
 from app.webhooks import router as webhooks_router  # webhook router
 
-app = FastAPI(title="Order Desk API")
+from app import worker
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    if os.getenv("RUN_WORKER") == "1":  # only on Render, not in local dev
+        threading.Thread(target=worker.main, daemon=True).start()
+    yield
+app = FastAPI(title="Order Desk API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://agentic-order.vercel.app", "http://localhost:5173"],
