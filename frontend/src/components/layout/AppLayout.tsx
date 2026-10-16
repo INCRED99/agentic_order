@@ -6,6 +6,7 @@
 import { Outlet } from 'react-router-dom'
 import Sidebar from './Sidebar'
 import BottomNav from './BottomNav'
+import OnboardingTutorial from '../OnboardingTutorial'
 
 export default function AppLayout() {
     return (
@@ -21,6 +22,7 @@ export default function AppLayout() {
             </main>
 
             <BottomNav />
+            <OnboardingTutorial />
         </div>
     )
 }
