@@ -48,12 +48,23 @@ export interface Order {
     updatedAt: string // ISO 8601
 }
 
+export interface ApprovalItem {
+    menuItemId: string
+    name: string
+    quantity: number
+    unitPricePaise: number
+    discountPercent?: number | null
+}
+
 export interface Approval {
     id: string
     orderId: string | null
     action: ApprovalAction
     reason: string // agent explanation shown to staff
     status: ApprovalStatus
+    discountPercent?: number | null
+    items?: ApprovalItem[] | null
+    totalPaise?: number | null
     createdAt: string // ISO 8601
     decidedAt: string | null // ISO 8601
 }

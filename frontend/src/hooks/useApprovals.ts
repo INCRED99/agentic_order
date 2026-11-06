@@ -46,11 +46,11 @@ export function useApprovals() { // everything the Approvals page needs, in one 
         setAttempt((a) => a + 1); // triggers the effect above
     }
 
-    async function decide(id: string, decision: Decision) { // approve or reject one approval
+    async function decide(id: string, decision: Decision, payload?: { approved_items?: string[] }) { // approve or reject one approval
         setBusy({ id, decision }); // mark it busy so its button shows a spinner
         setActionError(null); // clear the old action error
         try { // run the request
-            const updated = await decideApproval(id, decision); // wait for the server
+            const updated = await decideApproval(id, decision, payload); // wait for the server
             setApprovals((prev) => prev.map((a) => (a.id === updated.id ? updated : a))); // swap in the server's version
         } catch (e) { // failure
             setActionError(errorText(e)); // show the reason, for example "Approval was already decided"

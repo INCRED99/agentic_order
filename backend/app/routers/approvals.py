@@ -10,24 +10,27 @@ from app.deps import current_user_id  # verifies the token and returns the owner
 from app.inbox import send_mail  # sends a mail through our SMTP account
 from app.payment_mail import send_payment_link_mail
 from app.agent_tools import _find_or_create_customer, make_run_context
-from app.schemas import ApprovalOut  # response shape, defined in schemas.py
+from app.schemas import ApprovalOut, ApprovalDecisionRequest  # response and request shapes
 
 log = logging.getLogger("approvals")  # logger name shown in every line
 # Logging rule: ids and reasons only, never mail bodies, subjects or approval reasons.
 
 router = APIRouter(prefix="/approvals", tags=["approvals"])  # every route below starts with /approvals
-COLS = "id,order_id,action,reason,status,created_at,decided_at"  # the fields the UI needs (needs migration 005)
+COLS = "id,order_id,action,reason,status,created_at,decided_at,discount_percent,payload"  # the fields the UI needs
 ORDER_ACTIONS = {"apply_discount", "accept_large_order", "substitute_item"}  # requests about a new order, a reject can invite a normal re-order
 SIGN_OFF = "\n\nThank you,\nThe restaurant team\n"  # same closing as the agent's mails
 
 
-def _to_approval(row: dict) -> dict:  # database row -> ApprovalOut shape
+def _to_approval(row: dict, items: list[dict] | None = None, total_paise: int | None = None) -> dict:  # database row -> ApprovalOut shape
     return {  # the shape the UI expects
         "id": row["id"],  # approval id
         "order_id": row.get("order_id"),  # None when the approval is not about an order
         "action": row["action"],  # for example accept_large_order
         "reason": row.get("reason") or "",  # empty text replaces null, so the UI always gets a string
         "status": row["status"].upper(),  # D1: database stores lowercase, the UI expects uppercase
+        "discount_percent": row.get("discount_percent"),
+        "items": items,
+        "total_paise": total_paise,
         "created_at": row["created_at"],  # ISO timestamp string
         "decided_at": row.get("decided_at"),  # None while pending
     }
@@ -46,7 +49,68 @@ def list_approvals(  # newest approvals first
         .limit(limit)  # cap the result size
         .execute()  # send the query to Supabase
     )
-    return [_to_approval(r) for r in res.data]  # convert each row, FastAPI turns the list into JSON
+    rows = res.data or []
+    order_ids = [r["order_id"] for r in rows if r.get("order_id")]
+
+    order_items_map: dict[str, list[dict]] = {}
+    order_totals_map: dict[str, int] = {}
+    if order_ids:
+        try:
+            it_res = (
+                db.table("order_items")
+                .select("order_id,menu_item_id,quantity,unit_price_paise,menu_items(name)")
+                .in_("order_id", order_ids)
+                .eq("owner_id", owner_id)
+                .execute()
+            )
+            for item in (it_res.data or []):
+                oid = item["order_id"]
+                name = item.get("menu_items", {}).get("name") if isinstance(item.get("menu_items"), dict) else "Dish"
+                order_items_map.setdefault(oid, []).append({
+                    "menu_item_id": str(item["menu_item_id"]),
+                    "name": name,
+                    "quantity": item["quantity"],
+                    "unit_price_paise": item["unit_price_paise"],
+                })
+        except Exception:
+            log.exception("failed to load order_items for approvals")
+
+        try:
+            ord_res = (
+                db.table("orders")
+                .select("id,total_paise")
+                .in_("id", order_ids)
+                .eq("owner_id", owner_id)
+                .execute()
+            )
+            for o in (ord_res.data or []):
+                order_totals_map[o["id"]] = o.get("total_paise")
+        except Exception:
+            log.exception("failed to load order totals for approvals")
+
+    out = []
+    for r in rows:
+        oid = r.get("order_id")
+        raw_items = order_items_map.get(oid) if oid else None
+        items_out = None
+        if raw_items:
+            payload = r.get("payload") or {}
+            items_disc_list = payload.get("items_discount") or []
+            item_disc_map = {d["menu_item_id"]: d.get("discount_percent") for d in items_disc_list if "menu_item_id" in d}
+            items_out = []
+            for it in raw_items:
+                mid = it["menu_item_id"]
+                disc = item_disc_map.get(mid) or r.get("discount_percent")
+                items_out.append({
+                    "menu_item_id": mid,
+                    "name": it["name"],
+                    "quantity": it["quantity"],
+                    "unit_price_paise": it["unit_price_paise"],
+                    "discount_percent": disc,
+                })
+
+        out.append(_to_approval(r, items=items_out, total_paise=order_totals_map.get(oid)))
+    return out
 
 
 # DECISION PROBLEM: two clicks (or two browser tabs) can decide the same approval at the same time.
@@ -174,7 +238,7 @@ def _cancel_pending_order(owner_id: str, order_id: str) -> bool:
     return bool(res.data)
 
 
-def _process_approval_decision(owner_id: str, row: dict, approved: bool) -> None:
+def _process_approval_decision(owner_id: str, row: dict, approved: bool, approved_items: list[str] | None = None) -> None:
     action = row.get("action")
     order_id = row.get("order_id")
     pct = row.get("discount_percent") or 10
@@ -215,23 +279,60 @@ def _process_approval_decision(owner_id: str, row: dict, approved: bool) -> None
                     if order.get("status") != "PENDING":
                         _send_customer_mail(owner_id, row, "This order is no longer pending. Please send a new order if you would like to place an order.")
                         return
-                    original = order.get("original_total_paise") or order["total_paise"]
-                    new_total = original * (100 - pct) // 100
+
+                    it_rows = (
+                        db.table("order_items")
+                        .select("menu_item_id,quantity,unit_price_paise,menu_items(name)")
+                        .eq("order_id", order_id)
+                        .eq("owner_id", owner_id)
+                        .execute()
+                        .data or []
+                    )
+
+                    payload = row.get("payload") or {}
+                    items_disc_list = payload.get("items_discount") or []
+                    item_disc_map = {d["menu_item_id"]: d.get("discount_percent") for d in items_disc_list if "menu_item_id" in d}
+                    default_pct = row.get("discount_percent") or 10
+
+                    original_total = order.get("original_total_paise") or order["total_paise"]
+                    new_total = 0
+                    applied_details = []
+
+                    if it_rows:
+                        for it in it_rows:
+                            mid = str(it["menu_item_id"])
+                            name = it.get("menu_items", {}).get("name") if isinstance(it.get("menu_items"), dict) else "Item"
+                            line_orig = it["quantity"] * it["unit_price_paise"]
+                            if approved_items is None or mid in approved_items:
+                                disc = item_disc_map.get(mid) or default_pct
+                                line_disc = line_orig * (100 - disc) // 100
+                                new_total += line_disc
+                                applied_details.append(f"{it['quantity']}x {name} ({disc}% off: Rs {_rupees(line_disc)})")
+                            else:
+                                new_total += line_orig
+                                applied_details.append(f"{it['quantity']}x {name} (regular price: Rs {_rupees(line_orig)})")
+                    else:
+                        new_total = original_total * (100 - default_pct) // 100
+                        applied_details.append(f"{default_pct}% discount applied to order")
+
+                    effective_pct = round(((original_total - new_total) / original_total) * 100) if original_total > 0 else default_pct
                     db.table("orders").update({
-                        "original_total_paise": original,
+                        "original_total_paise": original_total,
                         "total_paise": new_total,
-                        "discount_percent": pct,
+                        "discount_percent": effective_pct,
                     }).eq("id", order_id).eq("owner_id", owner_id).execute()
 
+                    details_str = "\n".join(f"- {d}" for d in applied_details)
                     intro = (
-                        f"Great news! Your request for a {pct}% discount has been approved by the restaurant.\n"
-                        f"Your discounted order total is Rs {_rupees(new_total)} (discounted from Rs {_rupees(original)})."
+                        f"Great news! Your discount request has been approved by the restaurant staff.\n\n"
+                        f"Order breakdown:\n{details_str}\n\n"
+                        f"Updated order total: Rs {_rupees(new_total)} (was Rs {_rupees(original_total)})."
                     )
                     send_payment_link_mail(owner_id, order_id, intro=intro, force=True)
                 else:
                     # Discount REJECTED, but the order is accepted at the regular menu price!
                     intro = (
-                        f"Your request for a {pct}% discount could not be approved by the restaurant staff.\n"
+                        f"Your request for a discount could not be approved by the restaurant staff.\n"
                         f"However, your order for the accepted menu items has been confirmed at the regular price of Rs {_rupees(order['total_paise'])}."
                     )
                     send_payment_link_mail(owner_id, order_id, intro=intro, force=True)
@@ -312,8 +413,16 @@ def _process_approval_decision(owner_id: str, row: dict, approved: bool) -> None
 
 
 @router.post("/{approval_id}/approve", response_model=ApprovalOut)  # POST /approvals/<id>/approve
-def approve(approval_id: str, background: BackgroundTasks, owner_id: str = Depends(current_user_id)):
+def approve(
+    approval_id: str,
+    background: BackgroundTasks,
+    body: ApprovalDecisionRequest | None = None,
+    owner_id: str = Depends(current_user_id)
+):
     row = _decide(owner_id, approval_id, "approved")
+    approved_items = body.approved_items if body else None
+    background.add_task(_process_approval_decision, owner_id, row, True, approved_items)
+    return _to_approval(row)
     background.add_task(_process_approval_decision, owner_id, row, True)
     return _to_approval(row)
 

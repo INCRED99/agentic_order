@@ -136,6 +136,11 @@ class OrderLine(BaseModel):
     quantity: int
 
 
+class ItemDiscount(BaseModel):
+    item_no: int
+    discount_percent: int
+
+
 def build_tools(run: RunContext) -> list:
     @tool
     def get_menu() -> str:
@@ -295,10 +300,11 @@ def build_tools(run: RunContext) -> list:
     def request_approval(
         action: str,
         reason: str,
-        discount_percent: int | None = None,  # NEW
-        items: list[OrderLine] | None = None,  # NEW
+        discount_percent: int | None = None,
+        items: list[OrderLine] | None = None,
+        items_discount: list[ItemDiscount] | None = None,
     ) -> str:
-        """Ask the restaurant owner to decide a risky case (large order, discount, cancel, refund, substitute dish). action must be one of: apply_discount, cancel_order, refund_order, accept_large_order, substitute_item. Give a short reason. For apply_discount also give discount_percent (1 to 100). For accept_large_order give items using the dish numbers from get_menu. After this tool, stop."""
+        """Ask the restaurant owner to decide a risky case (large order, discount, cancel, refund, substitute dish). action must be one of: apply_discount, cancel_order, refund_order, accept_large_order, substitute_item. Give a short reason. For apply_discount also give discount_percent (1 to 100), or items_discount for item-specific discounts. For accept_large_order give items using dish numbers from get_menu. After this tool, stop."""
         if action not in ALLOWED_ACTIONS:
             return f"Unknown action. Use one of: {', '.join(ALLOWED_ACTIONS)}."
         clean_reason = (reason or "").strip()[:MAX_REASON_CHARS]
@@ -321,7 +327,18 @@ def build_tools(run: RunContext) -> list:
                 if dish_id is None or line.quantity < 1:
                     return "Items are not valid. Call get_menu and use its numbers."
                 lines.append({"menu_item_id": dish_id, "quantity": line.quantity})
-            payload = {"items": lines}
+            payload["items"] = lines
+        if items_discount:
+            disc_lines = []
+            for idisc in items_discount:
+                dish_id = run.menu_map.get(idisc.item_no)
+                if dish_id:
+                    disc_lines.append({
+                        "menu_item_id": dish_id,
+                        "discount_percent": max(1, min(100, idisc.discount_percent)),
+                    })
+            if disc_lines:
+                payload["items_discount"] = disc_lines
         if action == "accept_large_order" and not payload.get("items"):
             return "accept_large_order needs the items. Call get_menu first, then send items."
 
