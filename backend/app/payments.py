@@ -150,18 +150,16 @@ def get_or_create_payment_link(owner_id: str, order_id: str) -> dict:
     # Options: (a) raise an error, (b) return the link that already exists.
     # Chosen: (b). Reason: ToolRetry and a re-run of the same mail must not fail or double-charge.
     # Cost: the caller cannot tell "new" from "reused" unless we add a flag later.
-    # The row already has a link, so reuse it.
-    if payment["payment_link_url"]:
+    # The row already has a link, so reuse it if the amount matches and it has not expired.
+    if payment.get("payment_link_url") and payment.get("amount_paise") == order["total_paise"]:
         # Check that the stored link has not expired yet (D26).
         expires_at = datetime.fromisoformat(payment["payment_link_expires_at"])
-        # An expired link must not be sent again; a later sweep sets the order to EXPIRED (D30).
-        if expires_at <= datetime.now(timezone.utc):
-            # Tell the caller clearly.
-            raise PaymentError("link_expired", "Payment link has expired")
-        # Return the existing link.
-        return _result(payment)
+        if expires_at > datetime.now(timezone.utc):
+            # Return the existing active link.
+            return _result(payment)
+        # If expired, we fall through to create a fresh active link for the pending order.
 
-    # No link yet: call Razorpay. RazorpayError goes up with its retryable flag (D28).
+    # No link yet, amount changed (e.g. discount applied), or link expired: call Razorpay.
     link = create_payment_link(
         # Our order id, sent as reference_id (D25).
         order_id=order_id,
@@ -179,23 +177,19 @@ def get_or_create_payment_link(owner_id: str, order_id: str) -> dict:
     updated = _first(
         # Start an update on the payments table.
         db.table("payments")
-        # Set the three new values.
+        # Set the values including the potentially updated amount.
         .update(
             {
-                # Razorpay link id, unique (migration 008).
+                "amount_paise": order["total_paise"],
                 "razorpay_payment_link_id": link["id"],
-                # URL for the customer email.
                 "payment_link_url": link["short_url"],
-                # Expiry as a timestamp.
                 "payment_link_expires_at": expires_iso,
             }
         )
-        # Update only our claim row.
+        # Update our claim row.
         .eq("id", payment["id"])
         # Match the owner.
         .eq("owner_id", owner_id)
-        # Only if no link was saved yet, so we never overwrite a link another caller saved.
-        .is_("razorpay_payment_link_id", "null")
         # Run the update.
         .execute()
     )

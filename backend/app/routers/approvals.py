@@ -8,6 +8,8 @@ from postgrest.exceptions import APIError  # error raised when Postgres rejects 
 from app.db import db  # the shared Supabase client (service role, bypasses RLS)
 from app.deps import current_user_id  # verifies the token and returns the owner_id
 from app.inbox import send_mail  # sends a mail through our SMTP account
+from app.payment_mail import send_payment_link_mail
+from app.agent_tools import _find_or_create_customer, make_run_context
 from app.schemas import ApprovalOut  # response shape, defined in schemas.py
 
 log = logging.getLogger("approvals")  # logger name shown in every line
@@ -88,104 +90,236 @@ def _thread_id(message_id: str | None) -> str | None:  # A11: make sure the Mess
     return mid if mid.startswith("<") else f"<{mid}>"  # add brackets when missing
 
 
-def _find_recipient(owner_id: str, row: dict) -> tuple[str, str, str | None] | None:  # A10: (address, subject, thread id) or None
-    run_id = row.get("agent_run_id")  # the run that asked for this approval, None for webhook approvals
-    if run_id:  # try the original mail first, so the reply lands in the customer's thread
-        runs = db.table("agent_runs").select("email_id").eq("id", run_id).eq("owner_id", owner_id).limit(1).execute().data  # owner guard
-        if runs:  # the run still exists (deleting it sets agent_run_id to null, D52)
-            mails = (  # the customer's mail
-                db.table("emails")  # the mail table
-                .select("from_email,subject,gmail_message_id")  # only what a reply needs
-                .eq("id", runs[0]["email_id"])  # the mail of that run
-                .eq("owner_id", owner_id)  # owner guard
-                .limit(1)  # one row
-                .execute()  # run it
-                .data  # list of rows
+def _rupees(paise: int) -> str:
+    return f"{paise / 100:.2f}"
+
+
+def _find_recipient(owner_id: str, row: dict) -> tuple[str, str, str | None] | None:
+    source_eid = row.get("source_email_id")
+    if source_eid:
+        mails = (
+            db.table("emails")
+            .select("from_email,subject,gmail_message_id")
+            .eq("id", source_eid)
+            .eq("owner_id", owner_id)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if mails:
+            address = parseaddr(mails[0].get("from_email") or "")[1]
+            if address:
+                base = " ".join((mails[0].get("subject") or "").split()) or "your order"
+                subject = base if base.lower().startswith("re:") else f"Re: {base}"
+                return address, subject, _thread_id(mails[0].get("gmail_message_id"))
+
+    run_id = row.get("agent_run_id")
+    if run_id:
+        runs = db.table("agent_runs").select("email_id").eq("id", run_id).eq("owner_id", owner_id).limit(1).execute().data
+        if runs:
+            mails = (
+                db.table("emails")
+                .select("from_email,subject,gmail_message_id")
+                .eq("id", runs[0]["email_id"])
+                .eq("owner_id", owner_id)
+                .limit(1)
+                .execute()
+                .data
             )
-            if mails:  # mail found
-                address = parseaddr(mails[0].get("from_email") or "")[1]  # plain address only
-                if address:  # readable
-                    base = " ".join((mails[0].get("subject") or "").split()) or "your order"  # one-line subject
-                    subject = base if base.lower().startswith("re:") else f"Re: {base}"  # add Re: once
-                    return address, subject, _thread_id(mails[0].get("gmail_message_id"))  # same-thread reply
-    order_id = row.get("order_id")  # fallback: approvals created by the webhook have an order but no run
-    if order_id:  # an order is known
-        orders = db.table("orders").select("customer_id").eq("id", order_id).eq("owner_id", owner_id).limit(1).execute().data  # owner guard
-        if orders:  # order found
-            customers = db.table("customers").select("email").eq("id", orders[0]["customer_id"]).eq("owner_id", owner_id).limit(1).execute().data  # owner guard
-            if customers and customers[0].get("email"):  # customer has an address
-                return customers[0]["email"], "Your order", None  # new thread, no original mail to reply to
-    return None  # nobody to write to
+            if mails:
+                address = parseaddr(mails[0].get("from_email") or "")[1]
+                if address:
+                    base = " ".join((mails[0].get("subject") or "").split()) or "your order"
+                    subject = base if base.lower().startswith("re:") else f"Re: {base}"
+                    return address, subject, _thread_id(mails[0].get("gmail_message_id"))
+
+    order_id = row.get("order_id")
+    if order_id:
+        orders = db.table("orders").select("customer_id,source_email_id").eq("id", order_id).eq("owner_id", owner_id).limit(1).execute().data
+        if orders:
+            if orders[0].get("source_email_id"):
+                mails = db.table("emails").select("from_email,subject,gmail_message_id").eq("id", orders[0]["source_email_id"]).eq("owner_id", owner_id).limit(1).execute().data
+                if mails:
+                    address = parseaddr(mails[0].get("from_email") or "")[1]
+                    if address:
+                        base = " ".join((mails[0].get("subject") or "").split()) or "your order"
+                        subject = base if base.lower().startswith("re:") else f"Re: {base}"
+                        return address, subject, _thread_id(mails[0].get("gmail_message_id"))
+            customers = db.table("customers").select("email").eq("id", orders[0]["customer_id"]).eq("owner_id", owner_id).limit(1).execute().data
+            if customers and customers[0].get("email"):
+                return customers[0]["email"], "Your order", None
+
+    return None
 
 
-# DECISION PROBLEM: what text goes to the customer?
-# Options: (1) include the approval reason, (2) fixed text per action and decision.
-# Chosen: option 2 (A9). Reason: the reason comes from the LLM, which read untrusted mail. It could carry links or tricks.
-# Cost: the customer gets no explanation, the owner can write one by hand.
-def _message_body(action: str, approved: bool, cancelled: bool) -> str:  # fixed customer text
-    if approved:  # owner said yes
-        if action == "cancel_order" and cancelled:  # we really cancelled the order
-            return "Your order was cancelled as you asked. Please do not pay the payment link we sent earlier."  # honest, effect was done
-        if action == "cancel_order":  # approved but the order was not PENDING any more
-            return "The restaurant approved your cancellation request. The restaurant team will contact you to finish it."  # owner must act by hand
-        if action == "refund_order":  # A8: no money moved by code
-            return "The restaurant approved your refund request. The restaurant team will process it and contact you."  # owner refunds by hand
-        return "The restaurant approved your request. The restaurant team will contact you to finish it."  # A8: owner finishes by hand
-    if action in ORDER_ACTIONS:  # owner said no to an order-type request
-        return "The restaurant could not approve your request. You are welcome to send a new order by email at the regular menu prices."  # D-assumed from handoff
-    return "The restaurant could not approve your request. Please contact the restaurant directly."  # cancel or refund rejected
+def _send_customer_mail(owner_id: str, row: dict, body: str) -> None:
+    target = _find_recipient(owner_id, row)
+    if not target:
+        log.warning("approval %s decided, no recipient found", row.get("id"))
+        return
+    address, subject, in_reply_to = target
+    full_body = f"Hello,\n\n{body}{SIGN_OFF}"
+    send_mail(to=address, subject=subject, body=full_body, in_reply_to=in_reply_to)
 
 
-def _notify(owner_id: str, row: dict, approved: bool, cancelled: bool) -> None:  # background task: send the customer mail
-    try:  # nothing here may crash the server
-        target = _find_recipient(owner_id, row)  # who to write to
-        if target is None:  # nobody known
-            log.warning("approval %s decided, no recipient for the mail", row.get("id"))  # id only
-            return  # nothing to send
-        address, subject, in_reply_to = target  # unpack
-        body = "Hello,\n\n" + _message_body(row["action"], approved, cancelled) + SIGN_OFF  # fixed text only
-        send_mail(address, subject, body, in_reply_to=in_reply_to)  # same thread when we know the id
-        log.info("approval %s decision mail sent", row.get("id"))  # no address in the log
-    except Exception:  # SMTP or database problem
-        log.exception("approval %s decision mail failed", row.get("id"))  # A7: the decision stays saved
-
-
-def _cancel_pending_order(owner_id: str, order_id: str) -> bool:  # A8: the only real effect in V1
-    res = (  # one guarded update
-        db.table("orders")  # the orders table
-        .update({"status": "CANCELLED"})  # new status
-        .eq("id", order_id)  # this order
-        .eq("owner_id", owner_id)  # owner guard
-        .eq("status", "PENDING")  # never cancel a PAID order here, that needs a refund
-        .execute()  # run it
+def _cancel_pending_order(owner_id: str, order_id: str) -> bool:
+    res = (
+        db.table("orders")
+        .update({"status": "CANCELLED"})
+        .eq("id", order_id)
+        .eq("owner_id", owner_id)
+        .eq("status", "PENDING")
+        .execute()
     )
-    return bool(res.data)  # True when a row changed
+    return bool(res.data)
 
 
-# DECISION PROBLEM: the decision and its effect are two separate writes, not one transaction.
-# Options: (1) effect first, then decision, (2) decision first, then effect, (3) one Postgres function for both.
-# Chosen: option 2, same as D36. Reason: the pending guard in _decide stops double clicks, so the effect runs once.
-# Cost: a crash between the two leaves "approved" with the order still PENDING. V2: a reconcile job or option 3.
-# Known gap: a cancelled order's Razorpay link stays payable. If paid later, the webhook (D37) files a refund approval.
-def _finish(background: BackgroundTasks, owner_id: str, row: dict, approved: bool) -> None:  # effect, then queue the mail
-    cancelled = False  # becomes True only when we really cancelled something
-    if approved and row["action"] == "cancel_order" and row.get("order_id"):  # the only action with a code effect
-        try:  # database can fail
-            cancelled = _cancel_pending_order(owner_id, row["order_id"])  # guarded update
-        except Exception:  # keep the request alive
-            log.exception("approval %s: cancel effect failed", row.get("id"))  # owner can cancel by hand
-    background.add_task(_notify, owner_id, row, approved, cancelled)  # runs after the response, A7
+def _process_approval_decision(owner_id: str, row: dict, approved: bool) -> None:
+    action = row.get("action")
+    order_id = row.get("order_id")
+    pct = row.get("discount_percent") or 10
+
+    # Fallback: if order_id is missing, look up order by source_email_id
+    if not order_id and row.get("source_email_id"):
+        order_rows = (
+            db.table("orders")
+            .select("id")
+            .eq("source_email_id", row["source_email_id"])
+            .eq("owner_id", owner_id)
+            .limit(1)
+            .execute()
+            .data
+        )
+        if order_rows:
+            order_id = order_rows[0]["id"]
+
+    try:
+        # 1. APPLY DISCOUNT
+        if action == "apply_discount":
+            if order_id:
+                order_rows = (
+                    db.table("orders")
+                    .select("id,status,total_paise,original_total_paise")
+                    .eq("id", order_id)
+                    .eq("owner_id", owner_id)
+                    .limit(1)
+                    .execute()
+                    .data
+                )
+                if not order_rows:
+                    log.warning("order %s not found for approval %s", order_id, row.get("id"))
+                    return
+                order = order_rows[0]
+
+                if approved:
+                    if order.get("status") != "PENDING":
+                        _send_customer_mail(owner_id, row, "This order is no longer pending. Please send a new order if you would like to place an order.")
+                        return
+                    original = order.get("original_total_paise") or order["total_paise"]
+                    new_total = original * (100 - pct) // 100
+                    db.table("orders").update({
+                        "original_total_paise": original,
+                        "total_paise": new_total,
+                        "discount_percent": pct,
+                    }).eq("id", order_id).eq("owner_id", owner_id).execute()
+
+                    intro = (
+                        f"Great news! Your request for a {pct}% discount has been approved by the restaurant.\n"
+                        f"Your discounted order total is Rs {_rupees(new_total)} (discounted from Rs {_rupees(original)})."
+                    )
+                    send_payment_link_mail(owner_id, order_id, intro=intro, force=True)
+                else:
+                    # Discount REJECTED, but the order is accepted at the regular menu price!
+                    intro = (
+                        f"Your request for a {pct}% discount could not be approved by the restaurant staff.\n"
+                        f"However, your order for the accepted menu items has been confirmed at the regular price of Rs {_rupees(order['total_paise'])}."
+                    )
+                    send_payment_link_mail(owner_id, order_id, intro=intro, force=True)
+                return
+
+            else:
+                # Customer asked for discount without dishes
+                if approved:
+                    _send_customer_mail(owner_id, row, f"Your request for a {pct}% discount has been approved! Please reply to this email with the dishes you want to order, and we will apply your discount.")
+                else:
+                    _send_customer_mail(owner_id, row, "Your request for a discount could not be approved by the restaurant staff.")
+                return
+
+        # 2. ACCEPT LARGE ORDER
+        if action == "accept_large_order":
+            if approved:
+                if not order_id and row.get("payload", {}).get("items") and row.get("source_email_id"):
+                    run = make_run_context(owner_id, row["source_email_id"])
+                    customer_id = _find_or_create_customer(run)
+                    if customer_id:
+                        res = db.rpc("create_pending_order", {
+                            "p_owner_id": owner_id,
+                            "p_customer_id": customer_id,
+                            "p_source_email_id": row["source_email_id"],
+                            "p_items": row["payload"]["items"],
+                        }).execute().data
+                        if isinstance(res, list):
+                            res = res[0] if res else {}
+                        order_id = (res or {}).get("order_id")
+                        if order_id:
+                            db.table("approvals").update({"order_id": order_id}).eq("id", row["id"]).execute()
+
+                if order_id:
+                    order_rows = db.table("orders").select("total_paise").eq("id", order_id).eq("owner_id", owner_id).limit(1).execute().data
+                    total_text = f"Rs {_rupees(order_rows[0]['total_paise'])}" if order_rows else ""
+                    intro = f"Your large order has been approved by the restaurant team! {('Total: ' + total_text) if total_text else ''}"
+                    send_payment_link_mail(owner_id, str(order_id), intro=intro, force=True)
+                else:
+                    _send_customer_mail(owner_id, row, "Your large order has been approved. The restaurant team will contact you shortly.")
+            else:
+                _send_customer_mail(owner_id, row, "Your large order request could not be accepted at this time due to kitchen capacity. You are welcome to place a smaller order from our regular menu.")
+            return
+
+        # 3. CANCEL ORDER
+        if action == "cancel_order":
+            if approved:
+                if order_id:
+                    _cancel_pending_order(owner_id, order_id)
+                _send_customer_mail(owner_id, row, "Your order cancellation request has been approved. Your order has been cancelled and no payment is needed.")
+            else:
+                _send_customer_mail(owner_id, row, "Your cancellation request could not be approved because your order is already being prepared by the kitchen.")
+            return
+
+        # 4. REFUND ORDER
+        if action == "refund_order":
+            if approved:
+                _send_customer_mail(owner_id, row, "Your refund request has been approved. The restaurant team will process your refund shortly.")
+            else:
+                _send_customer_mail(owner_id, row, "Your refund request could not be approved. Please contact the restaurant directly if you have any questions.")
+            return
+
+        # 5. SUBSTITUTE ITEM
+        if action == "substitute_item":
+            if approved:
+                _send_customer_mail(owner_id, row, "Your item substitution request has been approved! The kitchen will prepare your updated items.")
+            else:
+                _send_customer_mail(owner_id, row, "Your item substitution request could not be approved. Your order will be prepared with the original menu items.")
+            return
+
+        # FALLBACK
+        if approved:
+            _send_customer_mail(owner_id, row, "The restaurant team has approved your request.")
+        else:
+            _send_customer_mail(owner_id, row, "The restaurant team could not approve your request.")
+
+    except Exception:
+        log.exception("process_approval_decision failed for approval %s", row.get("id"))
 
 
 @router.post("/{approval_id}/approve", response_model=ApprovalOut)  # POST /approvals/<id>/approve
-def approve(approval_id: str, background: BackgroundTasks, owner_id: str = Depends(current_user_id)):  # approval_id from the URL
-    row = _decide(owner_id, approval_id, "approved")  # record the approval
-    _finish(background, owner_id, row, approved=True)  # effect and customer mail
-    return _to_approval(row)  # answer the dashboard
+def approve(approval_id: str, background: BackgroundTasks, owner_id: str = Depends(current_user_id)):
+    row = _decide(owner_id, approval_id, "approved")
+    background.add_task(_process_approval_decision, owner_id, row, True)
+    return _to_approval(row)
 
 
 @router.post("/{approval_id}/reject", response_model=ApprovalOut)  # POST /approvals/<id>/reject
-def reject(approval_id: str, background: BackgroundTasks, owner_id: str = Depends(current_user_id)):  # approval_id from the URL
-    row = _decide(owner_id, approval_id, "rejected")  # record the rejection
-    _finish(background, owner_id, row, approved=False)  # customer mail only
-    return _to_approval(row)  # answer the dashboard
+def reject(approval_id: str, background: BackgroundTasks, owner_id: str = Depends(current_user_id)):
+    row = _decide(owner_id, approval_id, "rejected")
+    background.add_task(_process_approval_decision, owner_id, row, False)
+    return _to_approval(row)
