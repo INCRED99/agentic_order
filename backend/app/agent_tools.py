@@ -313,7 +313,7 @@ def build_tools(run: RunContext) -> list:
                 except (ValueError, TypeError):
                     discount_percent = 10
 
-        payload = None  # NEW: items are stored so the owner's approval can create the order later
+        payload = {}  # Postgres approvals.payload column has NOT NULL constraint
         if items:
             lines = []
             for line in items:
@@ -322,7 +322,7 @@ def build_tools(run: RunContext) -> list:
                     return "Items are not valid. Call get_menu and use its numbers."
                 lines.append({"menu_item_id": dish_id, "quantity": line.quantity})
             payload = {"items": lines}
-        if action == "accept_large_order" and not payload:
+        if action == "accept_large_order" and not payload.get("items"):
             return "accept_large_order needs the items. Call get_menu first, then send items."
 
         try:
